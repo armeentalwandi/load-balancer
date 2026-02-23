@@ -118,7 +118,7 @@ def handle_client(clientsocket, addr):
 def startMultiThreadServer():
   serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
   serversocket.bind((HOST, PORT))
-  serversocket.listen(100)
+  serversocket.listen(100) #tells the Operating System how many unaccepted connections to keep in a queue before it starts refusing new people
 
   logger.info("Load Balancer Server running on %s:%s", HOST, PORT)
   executor = ThreadPoolExecutor(max_workers=thread_pool_workers)
