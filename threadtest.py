@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Threaded HTTP load tester for the local balancer."""
+"""Threaded HTTP load tester for the local balancer.
+
+Notes from recent runs (context for future debugging):
+- RemoteDisconnected errors occurred when backends were simple `python -m http.server` instances; those are single-threaded and can drop sockets under burst load, which the balancer surfaces as closed-without-response.
+- Switching to a threaded/asynchronous backend or lowering offered concurrency eliminated these drops; the tester itself was fine.
+"""
 
 import argparse
 import statistics

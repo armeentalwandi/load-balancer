@@ -24,6 +24,31 @@ rr_index = 0
 length_backend_servers = len(backend_servers)
 health_check_period = 10 # default 10 seconds
 
+async def read_full_request(client_reader):
+  """Read request headers and body from the client.
+
+  Returns (headers_bytes, body_bytes). Bodies are read only when a
+  Content-Length header is present; otherwise body_bytes is empty.
+  """
+
+  headers = await client_reader.readuntil(b"\r\n\r\n")
+
+  content_length = 0
+  try:
+    header_text = headers.decode(errors="ignore")
+    for line in header_text.split("\r\n"):
+      if line.lower().startswith("content-length:"):
+        content_length = int(line.split(":", 1)[1].strip() or 0)
+        break
+  except Exception:
+    content_length = 0
+
+  body = b""
+  if content_length > 0:
+    body = await client_reader.readexactly(content_length)
+
+  return headers, body
+
 async def call_health_route(server):
   url = f"http://{server[0]}:{server[1]}{health_check_path}"
 
@@ -74,6 +99,8 @@ async def find_backend_server():
 
 
 async def handle_client(client_reader, client_writer):
+  backend_reader = None
+  backend_writer = None
   try:
     # find a healthy backend server to route the client's request to
     backend_server =  await find_backend_server()
@@ -86,13 +113,16 @@ async def handle_client(client_reader, client_writer):
     
     logger.info("Routing client to backend %s", backend_server)
 
-    # start a connection to the backend server and forward the client's request in a stream
     backend_reader, backend_writer = await asyncio.open_connection(backend_server[0], backend_server[1])
 
-    data_chunk = await client_reader.read(4096)
-    backend_writer.write(data_chunk)
-    await backend_writer.drain() # ensures that the data is sent to the backend server immediately
-    backend_writer.write_eof() # signals to the backend server that the request data has been fully sent, allowing it to process the request without waiting for more data from the client.
+    # read only request line + headers from client and forward
+    headers, body = await read_full_request(client_reader)
+
+    backend_writer.write(headers)
+    if body:
+      backend_writer.write(body)
+    await backend_writer.drain()
+    backend_writer.write_eof() # signal to backend that request is complete
 
     while True:
       response_chunk = await backend_reader.read(4096)
@@ -100,11 +130,18 @@ async def handle_client(client_reader, client_writer):
         break
       client_writer.write(response_chunk)
       await client_writer.drain()
+  except Exception:
+    # If anything goes wrong (connect failure, parse error, backend drop), return 502 instead of dropping the socket.
+    logger.exception("Request handling failed")
+    try:
+      client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+      await client_writer.drain()
+    except Exception:
+      logger.exception("Failed to write 502 response")
   finally:
-
     client_writer.close()
     await client_writer.wait_closed()
-    if (backend_writer): 
+    if backend_writer:
       backend_writer.close()
       await backend_writer.wait_closed()
 
